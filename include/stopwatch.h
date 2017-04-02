@@ -27,9 +27,10 @@ struct timer {
   using duration = typename Clock::duration;
 
   timer(const duration duration) : expiry(Clock::now() + duration) {}
-  bool done() const { return Clock::now() >= expiry; }
+  timer(const time_point expiry) : expiry(expiry) {}
+  bool done() const { return done(Clock::now()); }
   bool done(const time_point now) const { return now >= expiry; }
-  duration remaining() const { return expiry - Clock::now(); };
+  duration remaining() const { return remaining(Clock::now()); };
   duration remaining(const time_point now) const { return expiry - now; }
   const time_point expiry;
 };
