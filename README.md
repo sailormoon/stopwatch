@@ -32,8 +32,8 @@ int main() {
 
 ## timing one function call
 ```c++
-#include <iostream>
 #include "stopwatch.h"
+#include <iostream>
 
 int main() {
   const auto cycles = stopwatch::time([] {
@@ -50,10 +50,10 @@ int main() {
 ## sampling multiple calls to a function
 Taking the median number of cycles for inserting 10000 items into the beginning of a container.
 ```c++
+#include "stopwatch.h"
 #include <deque>
 #include <iostream>
 #include <vector>
-#include "stopwatch.h"
 
 int main() {
   const auto deque_samples = stopwatch::sample<100>([] {
