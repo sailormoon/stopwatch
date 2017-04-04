@@ -7,7 +7,33 @@ While developing games, I have wanted the following features which are not provi
 2. timing function calls in a high precision manner
 
 # requirements
-The `RDTSCP` instruction and a compiler which supports C++11 or higher.
+The `RDTSCP` instruction and a compiler which supports C++11 or higher. Your processor must be an [Intel Nehalem (2008)](https://en.wikipedia.org/wiki/Nehalem_(microarchitecture)) or newer processor _or_ have an invariant TSC. If you do not meet these requirements, you can easily remove the `RDTSCP` code from the library and enjoy the other features.
+
+Your processor must be an [Intel Nehalem (2008)](https://en.wikipedia.org/wiki/Nehalem_(microarchitecture)) or newer processor _or_ a processeor with an invariant TSC. If you do not meet these requirements, you can easily remove the `RDTSCP` code from the library and enjoy the other features.
+
+## [The Intel Software Developer Manuals](http://www.intel.com/Assets/en_US/PDF/manual/253668.pdf)
+### Section 16.12.1
+> The time stamp counter in newer processors may support an enhancement, referred
+to as invariant TSC. Processor’s support for invariant TSC is indicated by
+CPUID.80000007H:EDX[8].
+The invariant TSC will run at a constant rate in all ACPI P-, C-. and T-states. This is
+the architectural behavior moving forward. On processors with invariant TSC
+support, the OS may use the TSC for wall clock timer services (instead of ACPI or
+HPET timers). TSC reads are much more efficient and do not incur the overhead
+associated with a ring transition or access to a platform resource.
+
+### Section 16.12.2
+> Processors based on Intel microarchitecture code name Nehalem provide an auxiliary
+TSC register, IA32_TSC_AUX that is designed to be used in conjunction with
+IA32_TSC. IA32_TSC_AUX provides a 32-bit field that is initialized by privileged software
+with a signature value (for example, a logical processor ID).
+
+> The primary usage of IA32_TSC_AUX in conjunction with IA32_TSC is to allow software
+to read the 64-bit time stamp in IA32_TSC and signature value in
+IA32_TSC_AUX with the instruction RDTSCP in an atomic operation. RDTSCP returns
+the 64-bit time stamp in EDX:EAX and the 32-bit TSC_AUX signature value in ECX.
+The atomicity of RDTSCP ensures that no context switch can occur between the reads
+of the TSC and TSC_AUX values.
 
 # usage
 ## timer
