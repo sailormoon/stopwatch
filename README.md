@@ -7,9 +7,8 @@ While developing games, I have wanted the following features which are not provi
 2. timing function calls in a high precision manner
 
 # requirements
-The `RDTSCP` instruction and a compiler which supports C++11 or higher. Your processor must be an [Intel Nehalem (2008)](https://en.wikipedia.org/wiki/Nehalem_(microarchitecture)) or newer processor _or_ have an invariant TSC. If you do not meet these requirements, you can easily remove the `RDTSCP` code from the library and enjoy the other features.
-
-Your processor must be an [Intel Nehalem (2008)](https://en.wikipedia.org/wiki/Nehalem_(microarchitecture)) or newer processor _or_ a processeor with an invariant TSC. If you do not meet these requirements, you can easily remove the `RDTSCP` code from the library and enjoy the other features.
+1. The `RDTSCP` instruction and a compiler which supports C++11 or higher.
+2. Your processor must be an [Intel Nehalem (2008)](https://en.wikipedia.org/wiki/Nehalem_(microarchitecture)) or newer processor _or_ a processeor with an invariant TSC. If you do not meet these requirements, you can easily remove the `RDTSCP` code from the library and enjoy the other features.
 
 ## [The Intel Software Developer Manuals](http://www.intel.com/Assets/en_US/PDF/manual/253668.pdf)
 ### Section 16.12.1
