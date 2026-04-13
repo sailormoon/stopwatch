@@ -1,4 +1,6 @@
 # ⏱️ stopwatch
+[![CI](https://github.com/sailormoon/stopwatch/actions/workflows/ci.yml/badge.svg)](https://github.com/sailormoon/stopwatch/actions/workflows/ci.yml)
+
 Single-header C++17 RDTSCP clock and timing utilities released into the public domain.
 
 # why
