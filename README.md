@@ -1,5 +1,5 @@
 # ⏱️ stopwatch
-Single-header C++11 RDTSCP clock and timing utilities released into the public domain.
+Single-header C++17 RDTSCP clock and timing utilities released into the public domain.
 
 # why
 While developing games, I have wanted the following features which are not provided by `std::chrono`:
@@ -7,8 +7,8 @@ While developing games, I have wanted the following features which are not provi
 2. timing function calls in a high precision manner
 
 # requirements
-1. The `RDTSCP` instruction and a compiler which supports C++11 or higher.
-2. Your processor must have an [Intel Nehalem (2008)](https://en.wikipedia.org/wiki/Nehalem_(microarchitecture)) or newer processor _or_ a processeor with an invariant TSC.
+1. The `RDTSCP` instruction and a compiler which supports C++17 or higher.
+2. Your processor must have an [Intel Nehalem (2008)](https://en.wikipedia.org/wiki/Nehalem_(microarchitecture)) or newer processor _or_ a processor with an invariant TSC.
 
 If you do not meet these requirements, you can easily remove the `RDTSCP` code from the library and enjoy the other features. The relevant sections of the [The Intel Software Developer Manuals](http://www.intel.com/Assets/en_US/PDF/manual/253668.pdf) are at the bottom of this page.
 
@@ -20,14 +20,16 @@ If you do not meet these requirements, you can easily remove the `RDTSCP` code f
 #include <iostream>
 #include <thread>
 
+using namespace std::chrono_literals;
+
 int main() {
-  const auto timer = stopwatch::make_timer(std::chrono::seconds(10));
+  const auto timer = stopwatch::make_timer(10s);
   while (!timer.done()) {
     std::cout << std::chrono::duration_cast<std::chrono::seconds>(
                      timer.remaining())
                      .count()
               << " seconds remain." << std::endl;
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(100ms);
   }
   std::cout << "10 seconds have elapsed" << std::endl;
 }
@@ -94,6 +96,29 @@ Using another clock is as simple as passing the clock in as a template argument.
   });
 ```
 `stopwatch::time([] { ... })` became `stopwatch::time<std::chrono::system_clock>([] { ... }`. That's it!
+
+# preventing dead-code elimination
+When microbenchmarking, the compiler may prove that a computed value is unused
+and remove the work entirely. Use `stopwatch::detail::do_not_optimize` to keep
+results alive:
+
+```c++
+#include "stopwatch.h"
+#include <numeric>
+#include <vector>
+#include <iostream>
+
+int main() {
+  std::vector<int> v(10000, 1);
+
+  const auto d = stopwatch::time([&] {
+    auto sum = std::accumulate(v.begin(), v.end(), 0);
+    stopwatch::detail::do_not_optimize(sum);  // prevents dead-code elimination
+  });
+
+  std::cout << d.count() << " cycles" << std::endl;
+}
+```
 
 # contributing
 Contributions of any variety are greatly appreciated. All code is passed through `clang-format` using the Google style.
