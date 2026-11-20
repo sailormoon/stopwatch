@@ -44,7 +44,7 @@ jobs:
     name: ${{ matrix.os }} / ${{ matrix.compiler }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DSTOPWATCH_BUILD_TESTS=ON ${{ matrix.cmake_args }}

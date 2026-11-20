@@ -17,7 +17,7 @@ Requires a C++17 (or newer) compiler (GCC, Clang, or MSVC). `stopwatch::default_
 | **ARM64 / AArch64** | `stopwatch::cntvct_clock` | `CNTVCT_EL0` + `ISB` | Works from user space on Apple Silicon, Linux ARM64 (AWS Graviton, Ampere, Raspberry Pi 3/4/5), Android, and Windows on ARM64. `duration::count()` is in raw counter ticks; use `cntvct_clock::frequency()` (via `CNTFRQ_EL0`) or `cntvct_clock::to_nanoseconds()`. |
 | **Other (e.g. 32-bit ARM)** | `std::chrono::steady_clock` | OS monotonic clock | Portable fallback. |
 
-The relevant sections of the [Intel Software Developer Manuals](https://www.intel.com/Assets/en_US/PDF/manual/253668.pdf) are at the bottom of this page.
+See [references](#references) below for the official Intel, AMD, Arm, and MSVC architecture documentation.
 
 # installation
 Copy [`include/stopwatch.h`](include/stopwatch.h) into your project, or consume it via CMake (`add_subdirectory` or `FetchContent`):
@@ -143,8 +143,12 @@ int main() {
 # contributing
 Contributions of any variety are greatly appreciated. All code is passed through `clang-format` using the Google style.
 
-## [The Intel Software Developer Manuals](https://www.intel.com/Assets/en_US/PDF/manual/253668.pdf)
-### Section 16.12.1
+# references
+
+## Intel (x86-64)
+[Intel® 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html) — Volume 2A/2B (`RDTSCP`, `LFENCE`) and Volume 3B (*Time-Stamp Counter*):
+
+### Invariant TSC (Volume 3B)
 > The time stamp counter in newer processors may support an enhancement, referred
 to as invariant TSC. Processor’s support for invariant TSC is indicated by
 CPUID.80000007H:EDX[8].
@@ -154,7 +158,7 @@ support, the OS may use the TSC for wall clock timer services (instead of ACPI o
 HPET timers). TSC reads are much more efficient and do not incur the overhead
 associated with a ring transition or access to a platform resource.
 
-### Section 16.12.2
+### `IA32_TSC_AUX` Register and `RDTSCP` Support (Volume 3B)
 > Processors based on Intel microarchitecture code name Nehalem provide an auxiliary
 TSC register, IA32_TSC_AUX that is designed to be used in conjunction with
 IA32_TSC. IA32_TSC_AUX provides a 32-bit field that is initialized by privileged software
@@ -166,3 +170,18 @@ IA32_TSC_AUX with the instruction RDTSCP in an atomic operation. RDTSCP returns
 the 64-bit time stamp in EDX:EAX and the 32-bit TSC_AUX signature value in ECX.
 The atomicity of RDTSCP ensures that no context switch can occur between the reads
 of the TSC and TSC_AUX values.
+
+## AMD (x86-64)
+- [AMD64 Architecture Programmer's Manual, Volume 2: System Programming (Pub. #24593)](https://docs.amd.com/search/all?query=24593&content-lang=en-US) — Time-Stamp Counter and Invariant TSC (`CPUID Fn8000_0007_EDX[TscInvariant]`, bit 8, supported since AMD Family 10h and all Zen generations).
+- [AMD64 Architecture Programmer's Manual, Volume 3: General-Purpose and System Instructions (Pub. #24594)](https://docs.amd.com/search/all?query=24594&content-lang=en-US) — `RDTSCP` (waits for all prior instructions, returns 64-bit TSC in `EDX:EAX` and `TSC_AUX` in `ECX`) and `LFENCE`.
+- [Software Techniques for Managing Speculation on AMD Processors](https://www.amd.com/content/dam/amd/en/documents/resources/software-techniques-for-managing-speculation.pdf) (Mitigation G-2) — `LFENCE` dispatch serialization via `MSR C001_1029[1] = 1` (enabled by default on modern Linux and Windows kernels; always dispatch-serializing on Family 0Fh/11h).
+
+## Arm (ARM64 / AArch64)
+- [Arm® Architecture Reference Manual for A-profile architecture (ARM DDI 0487)](https://developer.arm.com/documentation/ddi0487/latest/) — Part D (*The Generic Timer in AArch64 state* and *Generic Timer registers*):
+  - `CNTVCT_EL0` (Counter-timer Virtual Count Register): 64-bit monotonic virtual counter readable from unprivileged user space (`EL0`) across Apple Silicon, Linux ARM64, Android, and Windows on ARM64.
+  - `CNTFRQ_EL0` (Counter-timer Frequency Register): system counter frequency in Hz, used by `cntvct_clock::frequency()` and `cntvct_clock::to_nanoseconds()`.
+  - `ISB` (Instruction Synchronization Barrier): prevents speculative/out-of-order reads across `MRS CNTVCT_EL0` on all Armv8-A+ processors (whereas self-synchronized `CNTVCTSS_EL0` requires Armv8.6-A / `FEAT_ECV`).
+
+## MSVC Intrinsics (Windows x64 & ARM64)
+- [x64 (amd64) intrinsics list](https://learn.microsoft.com/en-us/cpp/intrinsics/x64-amd64-intrinsics-list?view=msvc-170) — `__rdtscp`, `_mm_lfence`.
+- [ARM64 intrinsics](https://learn.microsoft.com/en-us/cpp/intrinsics/arm64-intrinsics?view=msvc-170) — `_ReadStatusReg`, `__isb`, `_ARM64_BARRIER_SY`.
