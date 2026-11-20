@@ -9,38 +9,48 @@ on:
 jobs:
   build-and-test:
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            compiler: gcc
-            cc: gcc-13
-            cxx: g++-13
-          - os: ubuntu-latest
-            compiler: clang
-            cc: clang-16
-            cxx: clang++-16
+          - os: ubuntu-24.04
+            compiler: gcc-x64-cpp17
+            cmake_args: -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_CXX_STANDARD=17
+          - os: ubuntu-24.04
+            compiler: gcc-x64-cpp20
+            cmake_args: -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_CXX_STANDARD=20
+          - os: ubuntu-24.04
+            compiler: clang-x64-cpp17
+            cmake_args: -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_CXX_STANDARD=17
+          - os: ubuntu-24.04-arm
+            compiler: gcc-arm64-cpp17
+            cmake_args: -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_CXX_STANDARD=17
+          - os: ubuntu-24.04-arm
+            compiler: gcc-arm64-cpp20
+            cmake_args: -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_CXX_STANDARD=20
+          - os: ubuntu-24.04-arm
+            compiler: clang-arm64-cpp17
+            cmake_args: -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_CXX_STANDARD=17
           - os: macos-latest
-            compiler: apple-clang
-            cc: clang
-            cxx: clang++
+            compiler: apple-clang-arm64-cpp17
+            cmake_args: -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_CXX_STANDARD=17
+          - os: windows-latest
+            compiler: msvc-x64-cpp17
+            cmake_args: -A x64 -DCMAKE_CXX_STANDARD=17
+          - os: windows-11-arm
+            compiler: msvc-arm64-cpp17
+            cmake_args: -A ARM64 -DCMAKE_CXX_STANDARD=17
 
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.os }} / ${{ matrix.compiler }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Configure
-        env:
-          CC: ${{ matrix.cc }}
-          CXX: ${{ matrix.cxx }}
-        run: |
-          cmake -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DSTOPWATCH_BUILD_TESTS=ON
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DSTOPWATCH_BUILD_TESTS=ON ${{ matrix.cmake_args }}
 
       - name: Build
-        run: cmake --build build --parallel
+        run: cmake --build build --config Release --parallel
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build -C Release --output-on-failure

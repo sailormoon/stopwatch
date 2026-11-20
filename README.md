@@ -1,18 +1,29 @@
 # ⏱️ stopwatch
 [![CI](https://github.com/sailormoon/stopwatch/actions/workflows/ci.yml/badge.svg)](https://github.com/sailormoon/stopwatch/actions/workflows/ci.yml)
 
-Single-header C++17 RDTSCP clock and timing utilities released into the public domain.
+Single-header C++17 hardware clock and timing utilities for x86-64 (Intel & AMD) and ARM64 (Apple Silicon, Linux, Windows), released into the public domain.
 
 # why
 While developing games, I have wanted the following features which are not provided by `std::chrono`:
 1. triggering events after a certain amount of time
 2. timing function calls in a high precision manner
 
-# requirements
-1. The `RDTSCP` instruction and a compiler which supports C++17 or higher.
-2. Your processor must have an [Intel Nehalem (2008)](https://en.wikipedia.org/wiki/Nehalem_(microarchitecture)) or newer processor _or_ a processor with an invariant TSC.
+# requirements & platform support
+Requires a C++17 (or newer) compiler (GCC, Clang, or MSVC). `stopwatch::default_clock` automatically selects the best low-overhead monotonic clock for your target architecture:
 
-If you do not meet these requirements, you can easily remove the `RDTSCP` code from the library and enjoy the other features. The relevant sections of the [The Intel Software Developer Manuals](http://www.intel.com/Assets/en_US/PDF/manual/253668.pdf) are at the bottom of this page.
+| Architecture | `stopwatch::default_clock` | Hardware counter | Notes |
+| --- | --- | --- | --- |
+| **x86-64 (Intel & AMD)** | `stopwatch::rdtscp_clock` | `RDTSCP` + `LFENCE` | Requires [Intel Nehalem (2008)](https://en.wikipedia.org/wiki/Nehalem_(microarchitecture))+ or AMD Family 10h (2007)+ / Zen+ with an invariant TSC. `duration::count()` is in raw TSC ticks. |
+| **ARM64 / AArch64** | `stopwatch::cntvct_clock` | `CNTVCT_EL0` + `ISB` | Works from user space on Apple Silicon, Linux ARM64 (AWS Graviton, Ampere, Raspberry Pi 3/4/5), Android, and Windows on ARM64. `duration::count()` is in raw counter ticks; use `cntvct_clock::frequency()` (via `CNTFRQ_EL0`) or `cntvct_clock::to_nanoseconds()`. |
+| **Other (e.g. 32-bit ARM)** | `std::chrono::steady_clock` | OS monotonic clock | Portable fallback. |
+
+See [references](#references) below for the official Intel, AMD, Arm, and MSVC architecture documentation.
+
+# installation
+Copy [`include/stopwatch.h`](include/stopwatch.h) into your project, or consume it via CMake (`add_subdirectory` or `FetchContent`):
+```cmake
+target_link_libraries(your_target PRIVATE stopwatch::stopwatch)
+```
 
 # usage
 ## timer
@@ -43,19 +54,28 @@ int main() {
 #include <iostream>
 
 int main() {
-  const auto cycles = stopwatch::time([] {
+  const auto ticks = stopwatch::time([] {
     for (std::size_t i = 0; i < 10; ++i) {
       std::cout << i << std::endl;
     }
   });
 
-  std::cout << "To print out 10 numbers, it took " << cycles.count()
-            << " cycles." << std::endl;
+  std::cout << "To print out 10 numbers, it took " << ticks.count()
+            << " ticks." << std::endl;
 }
 ```
 
+On ARM64, you can convert ticks from `stopwatch::cntvct_clock` to nanoseconds using the hardware counter frequency (`CNTFRQ_EL0`):
+```c++
+#if defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
+  const auto ns = stopwatch::cntvct_clock::to_nanoseconds(ticks);
+  std::cout << ns.count() << " ns (" << stopwatch::cntvct_clock::frequency()
+            << " Hz counter)" << std::endl;
+#endif
+```
+
 ## sampling multiple calls to a function
-Taking the median number of cycles for inserting 10000 items into the beginning of a container.
+Taking the median number of ticks for inserting 10000 items into the beginning of a container.
 ```c++
 #include "stopwatch.h"
 #include <deque>
@@ -89,44 +109,46 @@ median for vector: 7595754
 ```
 
 # using another clock
-Using another clock is as simple as passing the clock in as a template argument. An example using `std::chrono::system_clock` inplace of `stopwatch::rdtscp_clock` for the `timing one function call` example:
+Using another clock is as simple as passing the clock in as a template argument. An example using `std::chrono::steady_clock` in place of `stopwatch::default_clock` for the `timing one function call` example:
 ```c++
-  const auto cycles = stopwatch::time<std::chrono::system_clock>([] {
+  const auto elapsed = stopwatch::time<std::chrono::steady_clock>([] {
     for (std::size_t i = 0; i < 10; ++i) {
       std::cout << i << std::endl;
     }
   });
 ```
-`stopwatch::time([] { ... })` became `stopwatch::time<std::chrono::system_clock>([] { ... }`. That's it!
+`stopwatch::time([] { ... })` became `stopwatch::time<std::chrono::steady_clock>([] { ... })`. That's it!
 
 # preventing dead-code elimination
-When microbenchmarking, the compiler may prove that a computed value is unused
-and remove the work entirely. Use `stopwatch::detail::do_not_optimize` to keep
-results alive:
+When microbenchmarking, the compiler may prove that a computed value is unused and remove the work entirely. `stopwatch::time` automatically passes non-void return values to `stopwatch::do_not_optimize`, or you can call `stopwatch::do_not_optimize` (and `stopwatch::clobber_memory`) directly:
 
 ```c++
 #include "stopwatch.h"
+#include <iostream>
 #include <numeric>
 #include <vector>
-#include <iostream>
 
 int main() {
   std::vector<int> v(10000, 1);
 
   const auto d = stopwatch::time([&] {
     auto sum = std::accumulate(v.begin(), v.end(), 0);
-    stopwatch::detail::do_not_optimize(sum);  // prevents dead-code elimination
+    stopwatch::do_not_optimize(sum);  // prevents dead-code elimination
   });
 
-  std::cout << d.count() << " cycles" << std::endl;
+  std::cout << d.count() << " ticks" << std::endl;
 }
 ```
 
 # contributing
 Contributions of any variety are greatly appreciated. All code is passed through `clang-format` using the Google style.
 
-## [The Intel Software Developer Manuals](http://www.intel.com/Assets/en_US/PDF/manual/253668.pdf)
-### Section 16.12.1
+# references
+
+## Intel (x86-64)
+[Intel® 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html) — Volume 2A/2B (`RDTSCP`, `LFENCE`) and Volume 3B (*Time-Stamp Counter*):
+
+### Invariant TSC (Volume 3B)
 > The time stamp counter in newer processors may support an enhancement, referred
 to as invariant TSC. Processor’s support for invariant TSC is indicated by
 CPUID.80000007H:EDX[8].
@@ -136,7 +158,7 @@ support, the OS may use the TSC for wall clock timer services (instead of ACPI o
 HPET timers). TSC reads are much more efficient and do not incur the overhead
 associated with a ring transition or access to a platform resource.
 
-### Section 16.12.2
+### `IA32_TSC_AUX` Register and `RDTSCP` Support (Volume 3B)
 > Processors based on Intel microarchitecture code name Nehalem provide an auxiliary
 TSC register, IA32_TSC_AUX that is designed to be used in conjunction with
 IA32_TSC. IA32_TSC_AUX provides a 32-bit field that is initialized by privileged software
@@ -148,3 +170,18 @@ IA32_TSC_AUX with the instruction RDTSCP in an atomic operation. RDTSCP returns
 the 64-bit time stamp in EDX:EAX and the 32-bit TSC_AUX signature value in ECX.
 The atomicity of RDTSCP ensures that no context switch can occur between the reads
 of the TSC and TSC_AUX values.
+
+## AMD (x86-64)
+- [AMD64 Architecture Programmer's Manual, Volume 2: System Programming (Pub. #24593)](https://docs.amd.com/search/all?query=24593&content-lang=en-US) — Time-Stamp Counter and Invariant TSC (`CPUID Fn8000_0007_EDX[TscInvariant]`, bit 8, supported since AMD Family 10h and all Zen generations).
+- [AMD64 Architecture Programmer's Manual, Volume 3: General-Purpose and System Instructions (Pub. #24594)](https://docs.amd.com/search/all?query=24594&content-lang=en-US) — `RDTSCP` (waits for all prior instructions, returns 64-bit TSC in `EDX:EAX` and `TSC_AUX` in `ECX`) and `LFENCE`.
+- [Software Techniques for Managing Speculation on AMD Processors](https://www.amd.com/content/dam/amd/en/documents/resources/software-techniques-for-managing-speculation.pdf) (Mitigation G-2) — `LFENCE` dispatch serialization via `MSR C001_1029[1] = 1` (enabled by default on modern Linux and Windows kernels; always dispatch-serializing on Family 0Fh/11h).
+
+## Arm (ARM64 / AArch64)
+- [Arm® Architecture Reference Manual for A-profile architecture (ARM DDI 0487)](https://developer.arm.com/documentation/ddi0487/latest/) — Part D (*The Generic Timer in AArch64 state* and *Generic Timer registers*):
+  - `CNTVCT_EL0` (Counter-timer Virtual Count Register): 64-bit monotonic virtual counter readable from unprivileged user space (`EL0`) across Apple Silicon, Linux ARM64, Android, and Windows on ARM64.
+  - `CNTFRQ_EL0` (Counter-timer Frequency Register): system counter frequency in Hz, used by `cntvct_clock::frequency()` and `cntvct_clock::to_nanoseconds()`.
+  - `ISB` (Instruction Synchronization Barrier): prevents speculative/out-of-order reads across `MRS CNTVCT_EL0` on all Armv8-A+ processors (whereas self-synchronized `CNTVCTSS_EL0` requires Armv8.6-A / `FEAT_ECV`).
+
+## MSVC Intrinsics (Windows x64 & ARM64)
+- [x64 (amd64) intrinsics list](https://learn.microsoft.com/en-us/cpp/intrinsics/x64-amd64-intrinsics-list?view=msvc-170) — `__rdtscp`, `_mm_lfence`.
+- [ARM64 intrinsics](https://learn.microsoft.com/en-us/cpp/intrinsics/arm64-intrinsics?view=msvc-170) — `_ReadStatusReg`, `__isb`, `_ARM64_BARRIER_SY`.
