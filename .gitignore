@@ -1,0 +1,9 @@
+build/
+out/
+cmake-build-*/
+.cache/
+.vs/
+.vscode/
+*.swp
+*.swo
+.DS_Store

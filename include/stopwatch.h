@@ -5,6 +5,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -15,6 +16,8 @@
 
 #if defined(_MSC_VER)
 #include <intrin.h>
+#elif defined(__x86_64__)
+#include <cpuid.h>
 #endif
 
 namespace stopwatch {
@@ -25,6 +28,45 @@ inline void compiler_fence() noexcept {
   std::atomic_signal_fence(std::memory_order_seq_cst);
 }
 
+#if defined(_MSC_VER) && !defined(__clang__)
+// Non-inlined, unoptimized sink used by do_not_optimize() on MSVC so values
+// cannot be dead-code-eliminated even under Whole Program Optimization (/GL).
+#pragma warning(push)
+#pragma warning(disable : 4748)
+#pragma optimize("", off)
+inline __declspec(noinline) void do_not_optimize_sink(
+    void const volatile* ptr) noexcept {
+  (void)ptr;
+}
+#pragma optimize("", on)
+#pragma warning(pop)
+#endif
+
+#if defined(__x86_64__) || defined(_M_X64)
+// Queries an extended CPUID leaf (>= 0x80000000) and returns EDX, or 0 if the
+// leaf is unsupported.
+inline auto cpuid_ext_edx(std::uint32_t leaf) noexcept -> std::uint32_t {
+#if defined(_MSC_VER)
+  int regs[4] = {0, 0, 0, 0};
+  __cpuid(regs, static_cast<int>(0x80000000u));
+  if (static_cast<std::uint32_t>(regs[0]) < leaf) {
+    return 0u;
+  }
+  __cpuid(regs, static_cast<int>(leaf));
+  return static_cast<std::uint32_t>(regs[3]);
+#else
+  unsigned int eax = 0;
+  unsigned int ebx = 0;
+  unsigned int ecx = 0;
+  unsigned int edx = 0;
+  if (__get_cpuid(leaf, &eax, &ebx, &ecx, &edx) == 0) {
+    return 0u;
+  }
+  return static_cast<std::uint32_t>(edx);
+#endif
+}
+#endif
+
 #if defined(_MSC_VER) && defined(_M_ARM64)
 // Encodes an AArch64 system register for MSVC's _ReadStatusReg intrinsic,
 // matching ARM64_SYSREG(op0, op1, crn, crm, op2) without pulling in <winnt.h>.
@@ -34,14 +76,42 @@ constexpr int encode_arm64_sysreg(int op0, int op1, int crn, int crm,
          ((crm & 0xF) << 3) | (op2 & 0x7);
 }
 #endif
+
+template <class Clock, class = void>
+struct is_tick_clock_impl : std::false_type {};
+
+template <class Clock>
+struct is_tick_clock_impl<
+    Clock, std::enable_if_t<std::is_convertible_v<
+               decltype(Clock::is_tick_clock), bool>>>
+    : std::bool_constant<static_cast<bool>(Clock::is_tick_clock)> {};
+
+template <class Clock, class = void>
+struct has_frequency : std::false_type {};
+
+template <class Clock>
+struct has_frequency<
+    Clock,
+    std::enable_if_t<std::is_arithmetic_v<decltype(Clock::frequency())>>>
+    : std::true_type {};
+
+template <class Clock>
+inline constexpr bool has_frequency_v = has_frequency<Clock>::value;
 }  // namespace detail
+
+// True if Clock::duration represents raw hardware ticks rather than calibrated
+// wall-clock time units.
+template <class Clock>
+struct is_tick_clock : detail::is_tick_clock_impl<Clock> {};
+
+template <class Clock>
+inline constexpr bool is_tick_clock_v = is_tick_clock<Clock>::value;
 
 // Prevents the compiler from optimizing away the given value.
 #if defined(_MSC_VER) && !defined(__clang__)
 template <class T>
 inline void do_not_optimize(T const& value) noexcept {
-  auto const* volatile sink = std::addressof(value);
-  (void)sink;
+  detail::do_not_optimize_sink(std::addressof(value));
   detail::compiler_fence();
 }
 #else
@@ -99,6 +169,18 @@ struct rdtscp_clock {
   using duration = std::chrono::duration<rep, period>;
   using time_point = std::chrono::time_point<rdtscp_clock, duration>;
   static constexpr bool is_steady = true;
+  static constexpr bool is_tick_clock = true;
+
+  // Returns true if the CPU reports RDTSCP support (CPUID 0x80000001:EDX[27]).
+  [[nodiscard]] static bool is_supported() noexcept {
+    return (detail::cpuid_ext_edx(0x80000001u) & (1u << 27)) != 0u;
+  }
+
+  // Returns true if the CPU reports an invariant TSC
+  // (CPUID 0x80000007:EDX[8]).
+  [[nodiscard]] static bool has_invariant_tsc() noexcept {
+    return (detail::cpuid_ext_edx(0x80000007u) & (1u << 8)) != 0u;
+  }
 
   static auto now() noexcept -> time_point {
 #if defined(_MSC_VER)
@@ -139,6 +221,7 @@ struct cntvct_clock {
   using duration = std::chrono::duration<rep, period>;
   using time_point = std::chrono::time_point<cntvct_clock, duration>;
   static constexpr bool is_steady = true;
+  static constexpr bool is_tick_clock = true;
 
   static auto now() noexcept -> time_point {
 #if defined(_MSC_VER)
@@ -196,6 +279,68 @@ using default_clock = cntvct_clock;
 using default_clock = std::chrono::steady_clock;
 #endif
 
+// Returns the tick frequency of Clock in Hz (ticks per second).
+// - For clocks with a hardware frequency() register (e.g. cntvct_clock),
+//   returns Clock::frequency() immediately.
+// - For calibrated wall-clock std::chrono clocks, returns the exact rate from
+//   Clock::period without waiting.
+// - For uncalibrated tick clocks (e.g. rdtscp_clock), measures ticks against
+//   std::chrono::steady_clock over sample_window (clamped to >= 1ms).
+template <class Clock = default_clock>
+[[nodiscard]] auto calibrate_frequency(
+    std::chrono::milliseconds sample_window = std::chrono::milliseconds(10))
+    -> double {
+  if constexpr (detail::has_frequency_v<Clock>) {
+    (void)sample_window;
+    return static_cast<double>(Clock::frequency());
+  } else if constexpr (!is_tick_clock_v<Clock>) {
+    (void)sample_window;
+    return static_cast<double>(Clock::period::den) /
+           static_cast<double>(Clock::period::num);
+  } else {
+    using ref_clock = std::chrono::steady_clock;
+    const auto window = sample_window > std::chrono::milliseconds(0)
+                            ? sample_window
+                            : std::chrono::milliseconds(1);
+    detail::compiler_fence();
+    const auto ref_start = ref_clock::now();
+    const auto tick_start = Clock::now();
+    detail::compiler_fence();
+    auto ref_end = ref_start;
+    do {
+      ref_end = ref_clock::now();
+    } while (ref_end - ref_start < window);
+    detail::compiler_fence();
+    const auto tick_end = Clock::now();
+    detail::compiler_fence();
+
+    const auto ref_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(ref_end -
+                                                             ref_start)
+            .count();
+    const auto ticks = (tick_end - tick_start).count();
+    if (ref_ns <= 0 || ticks <= 0) {
+      return 0.0;
+    }
+    return (static_cast<double>(ticks) / static_cast<double>(ref_ns)) * 1e9;
+  }
+}
+
+// Converts a duration (in Clock::duration::count() ticks) to nanoseconds using
+// the given frequency in Hz (ticks per second), e.g. from
+// calibrate_frequency<Clock>().
+template <class Rep, class Period>
+[[nodiscard]] auto to_nanoseconds(std::chrono::duration<Rep, Period> d,
+                                  double frequency_hz) noexcept
+    -> std::chrono::nanoseconds {
+  if (!(frequency_hz > 0.0)) {
+    return std::chrono::nanoseconds(0);
+  }
+  const double ns = (static_cast<double>(d.count()) / frequency_hz) * 1e9;
+  return std::chrono::nanoseconds(
+      static_cast<std::chrono::nanoseconds::rep>(std::llround(ns)));
+}
+
 // A timer using the specified clock.
 template <class Clock = std::chrono::steady_clock>
 struct timer {
@@ -203,11 +348,15 @@ struct timer {
   using time_point = typename Clock::time_point;
   using duration = typename Clock::duration;
 
-  explicit timer(const duration d) noexcept(noexcept(Clock::now()))
-      : expiry(Clock::now() + d) {}
   explicit timer(const time_point expiry) noexcept : expiry(expiry) {}
 
-  template <class Rep, class Period>
+  // Duration construction is disabled for raw tick clocks (such as
+  // rdtscp_clock and cntvct_clock), where duration::period is ratio<1> and
+  // wall-clock durations like std::chrono::seconds would silently mean raw
+  // ticks. Use a time_point (e.g. Clock::now() + duration(ticks)) or a
+  // wall-clock such as std::chrono::steady_clock instead.
+  template <class Rep, class Period, class C = Clock,
+            std::enable_if_t<!is_tick_clock_v<C>, int> = 0>
   explicit timer(const std::chrono::duration<Rep, Period> d) noexcept(
       noexcept(Clock::now()))
       : expiry(Clock::now() + std::chrono::duration_cast<duration>(d)) {}
@@ -227,7 +376,11 @@ struct timer {
 template <class Clock, class Duration>
 timer(std::chrono::time_point<Clock, Duration>) -> timer<Clock>;
 
-template <class Clock = std::chrono::steady_clock, class Rep, class Period>
+template <class Rep, class Period>
+timer(std::chrono::duration<Rep, Period>) -> timer<std::chrono::steady_clock>;
+
+template <class Clock = std::chrono::steady_clock, class Rep, class Period,
+          std::enable_if_t<!is_tick_clock_v<Clock>, int> = 0>
 [[nodiscard]] auto make_timer(std::chrono::duration<Rep, Period> d) noexcept(
     noexcept(Clock::now())) -> timer<Clock> {
   return timer<Clock>(d);
@@ -239,6 +392,56 @@ template <class Clock, class Duration>
   return timer<Clock>(
       std::chrono::time_point_cast<typename Clock::duration>(expiry));
 }
+
+// A lightweight monotonic stopwatch supporting elapsed time, lap timing, and
+// reset.
+template <class Clock = default_clock>
+class watch {
+ public:
+  using clock = Clock;
+  using time_point = typename Clock::time_point;
+  using duration = typename Clock::duration;
+
+  watch() noexcept(noexcept(Clock::now())) : start_(read_now()) {}
+  explicit watch(time_point start) noexcept : start_(start) {}
+
+  // Returns the time elapsed since construction or the last reset()/lap().
+  [[nodiscard]] auto elapsed() const noexcept(noexcept(Clock::now()))
+      -> duration {
+    return read_now() - start_;
+  }
+
+  // Returns the time elapsed since construction or the last reset()/lap() and
+  // restarts the stopwatch from that same timestamp.
+  [[nodiscard]] auto lap() noexcept(noexcept(Clock::now())) -> duration {
+    const auto now = read_now();
+    const auto d = now - start_;
+    start_ = now;
+    return d;
+  }
+
+  // Restarts the stopwatch from the current time (or an explicit timestamp).
+  void reset() noexcept(noexcept(Clock::now())) { start_ = read_now(); }
+  void reset(time_point start) noexcept { start_ = start; }
+
+  // Returns the current start timestamp.
+  [[nodiscard]] auto start_time() const noexcept -> time_point {
+    return start_;
+  }
+
+ private:
+  static auto read_now() noexcept(noexcept(Clock::now())) -> time_point {
+    detail::compiler_fence();
+    const auto now = Clock::now();
+    detail::compiler_fence();
+    return now;
+  }
+
+  time_point start_;
+};
+
+template <class Clock, class Duration>
+watch(std::chrono::time_point<Clock, Duration>) -> watch<Clock>;
 
 // Times how long it takes a function to execute using the specified clock.
 // If the callable returns a value, it is passed to do_not_optimize() to
@@ -265,19 +468,89 @@ template <class Clock = default_clock, class Func, class... Args>
   return end - start;
 }
 
-// Samples the given function N times using the specified clock.
-template <std::size_t N, class Clock = default_clock, class Func,
-          class... Args>
+// Samples the given function N times (after Warmup unrecorded iterations)
+// using the specified clock, returning the sorted array of durations.
+template <std::size_t N, class Clock = default_clock, std::size_t Warmup = 0u,
+          class Func, class... Args>
 [[nodiscard]] auto sample(Func&& function, Args&&... args)
     -> std::array<typename Clock::duration, N> {
-  std::array<typename Clock::duration, N> samples;
-
-  for (std::size_t i = 0u; i < N; ++i) {
-    samples[i] = time<Clock>(function, args...);
+  if constexpr (Warmup == 0u && N == 0u) {
+    (void)function;
+    ((void)args, ...);
+  }
+  if constexpr (Warmup > 0u) {
+    for (std::size_t i = 0u; i < Warmup; ++i) {
+      (void)time<Clock>(function, args...);
+    }
   }
 
-  std::sort(samples.begin(), samples.end());
+  std::array<typename Clock::duration, N> samples{};
+  if constexpr (N > 0u) {
+    for (std::size_t i = 0u; i < N; ++i) {
+      samples[i] = time<Clock>(function, args...);
+    }
+
+    std::sort(samples.begin(), samples.end());
+  }
   return samples;
+}
+
+// Convenience overload supporting sample<N, Warmup>(fn, ...) and
+// sample<N, Warmup, Clock>(fn, ...).
+template <std::size_t N, std::size_t Warmup, class Clock = default_clock,
+          class Func, class... Args>
+[[nodiscard]] auto sample(Func&& function, Args&&... args)
+    -> std::array<typename Clock::duration, N> {
+  return sample<N, Clock, Warmup>(std::forward<Func>(function),
+                                  std::forward<Args>(args)...);
+}
+
+// Summary statistics for a fixed-size array of sampled durations.
+template <class Duration>
+struct summary {
+  Duration min = Duration::zero();
+  Duration median = Duration::zero();
+  Duration p95 = Duration::zero();
+  Duration p99 = Duration::zero();
+  Duration max = Duration::zero();
+  double mean = 0.0;
+};
+
+// Computes min, median, p95, p99, max, and mean (in Duration::count() units)
+// for a sample array. Accepts sorted or unsorted arrays without mutating the
+// caller's input.
+template <class Duration, std::size_t N>
+[[nodiscard]] auto summarize(const std::array<Duration, N>& samples)
+    -> summary<Duration> {
+  summary<Duration> result{};
+  if constexpr (N == 0u) {
+    (void)samples;
+    return result;
+  } else {
+    auto sorted = samples;
+    if (!std::is_sorted(sorted.begin(), sorted.end())) {
+      std::sort(sorted.begin(), sorted.end());
+    }
+
+    result.min = sorted.front();
+    result.max = sorted.back();
+    if constexpr (N % 2u == 1u) {
+      result.median = sorted[N / 2u];
+    } else {
+      const auto lo = sorted[(N / 2u) - 1u];
+      const auto hi = sorted[N / 2u];
+      result.median = lo + (hi - lo) / 2;
+    }
+    result.p95 = sorted[((N - 1u) * std::size_t{95}) / std::size_t{100}];
+    result.p99 = sorted[((N - 1u) * std::size_t{99}) / std::size_t{100}];
+
+    double total = 0.0;
+    for (const auto& d : sorted) {
+      total += static_cast<double>(d.count());
+    }
+    result.mean = total / static_cast<double>(N);
+    return result;
+  }
 }
 }  // namespace stopwatch
 
