@@ -20,9 +20,18 @@ namespace {
 template <class Clock>
 constexpr bool check_clock_traits() {
   static_assert(std::is_signed_v<typename Clock::rep>);
+  static_assert(
+      std::is_same_v<typename Clock::duration,
+                     std::chrono::duration<typename Clock::rep,
+                                           typename Clock::period>>);
+  static_assert(
+      std::is_same_v<typename Clock::time_point,
+                     std::chrono::time_point<Clock, typename Clock::duration>>);
+  static_assert(
+      std::is_same_v<decltype(Clock::now()), typename Clock::time_point>);
   static_assert(noexcept(Clock::now()));
   static_assert(std::is_same_v<decltype(Clock::is_steady), const bool>);
-#if __cplusplus >= 202002L
+#if defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L
   static_assert(std::chrono::is_clock_v<Clock>);
 #endif
   return true;
