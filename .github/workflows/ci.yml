@@ -15,12 +15,23 @@ jobs:
           - os: ubuntu-24.04
             compiler: gcc-x64-cpp17
             cmake_args: -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_CXX_STANDARD=17
+            test_install: true
           - os: ubuntu-24.04
             compiler: gcc-x64-cpp20
             cmake_args: -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_CXX_STANDARD=20
           - os: ubuntu-24.04
             compiler: clang-x64-cpp17
             cmake_args: -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_CXX_STANDARD=17
+          - os: ubuntu-24.04
+            compiler: clang-x64-cpp20
+            cmake_args: -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_CXX_STANDARD=20
+          - os: ubuntu-24.04
+            compiler: gcc-x64-asan-ubsan
+            cmake_args: >-
+              -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+              -DCMAKE_CXX_STANDARD=17
+              -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
+              -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
           - os: ubuntu-24.04-arm
             compiler: gcc-arm64-cpp17
             cmake_args: -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_CXX_STANDARD=17
@@ -30,15 +41,30 @@ jobs:
           - os: ubuntu-24.04-arm
             compiler: clang-arm64-cpp17
             cmake_args: -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_CXX_STANDARD=17
+          - os: ubuntu-24.04-arm
+            compiler: clang-arm64-cpp20
+            cmake_args: -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_CXX_STANDARD=20
           - os: macos-latest
             compiler: apple-clang-arm64-cpp17
             cmake_args: -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_CXX_STANDARD=17
+          - os: macos-latest
+            compiler: apple-clang-arm64-cpp20
+            cmake_args: -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_CXX_STANDARD=20
           - os: windows-latest
             compiler: msvc-x64-cpp17
             cmake_args: -A x64 -DCMAKE_CXX_STANDARD=17
+          - os: windows-latest
+            compiler: msvc-x64-cpp20
+            cmake_args: -A x64 -DCMAKE_CXX_STANDARD=20
+          - os: windows-latest
+            compiler: msvc-win32-fallback-cpp17
+            cmake_args: -A Win32 -DCMAKE_CXX_STANDARD=17
           - os: windows-11-arm
             compiler: msvc-arm64-cpp17
             cmake_args: -A ARM64 -DCMAKE_CXX_STANDARD=17
+          - os: windows-11-arm
+            compiler: msvc-arm64-cpp20
+            cmake_args: -A ARM64 -DCMAKE_CXX_STANDARD=20
 
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.os }} / ${{ matrix.compiler }}
@@ -54,3 +80,28 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Verify CMake install and find_package
+        if: matrix.test_install == true
+        shell: bash
+        run: |
+          cmake --install build --prefix install_prefix
+          mkdir -p consumer/src
+          cat <<'EOF' > consumer/CMakeLists.txt
+          cmake_minimum_required(VERSION 3.14)
+          project(stopwatch_consumer LANGUAGES CXX)
+          find_package(stopwatch CONFIG REQUIRED)
+          add_executable(consumer src/main.cc)
+          target_link_libraries(consumer PRIVATE stopwatch::stopwatch)
+          EOF
+          cat <<'EOF' > consumer/src/main.cc
+          #include "stopwatch.h"
+          int main() {
+            stopwatch::watch w;
+            const auto d = stopwatch::time([] { return 1 + 1; });
+            return (d.count() >= 0 && w.elapsed().count() >= 0) ? 0 : 1;
+          }
+          EOF
+          cmake -S consumer -B consumer/build -DCMAKE_PREFIX_PATH="$PWD/install_prefix"
+          cmake --build consumer/build
+          ./consumer/build/consumer

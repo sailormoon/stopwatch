@@ -13,15 +13,16 @@ Requires a C++17 (or newer) compiler (GCC, Clang, or MSVC). `stopwatch::default_
 
 | Architecture | `stopwatch::default_clock` | Hardware counter | Notes |
 | --- | --- | --- | --- |
-| **x86-64 (Intel & AMD)** | `stopwatch::rdtscp_clock` | `RDTSCP` + `LFENCE` | Requires [Intel Nehalem (2008)](https://en.wikipedia.org/wiki/Nehalem_(microarchitecture))+ or AMD Family 10h (2007)+ / Zen+ with an invariant TSC. `duration::count()` is in raw TSC ticks. |
+| **x86-64 (Intel & AMD)** | `stopwatch::rdtscp_clock` | `RDTSCP` + `LFENCE` | Requires [Intel Nehalem (2008)](https://en.wikipedia.org/wiki/Nehalem_(microarchitecture))+ or AMD Family 10h (2007)+ / Zen+ with an invariant TSC. Query runtime CPU support via `rdtscp_clock::is_supported()` and `rdtscp_clock::has_invariant_tsc()`. `duration::count()` is in raw TSC ticks. |
 | **ARM64 / AArch64** | `stopwatch::cntvct_clock` | `CNTVCT_EL0` + `ISB` | Works from user space on Apple Silicon, Linux ARM64 (AWS Graviton, Ampere, Raspberry Pi 3/4/5), Android, and Windows on ARM64. `duration::count()` is in raw counter ticks; use `cntvct_clock::frequency()` (via `CNTFRQ_EL0`) or `cntvct_clock::to_nanoseconds()`. |
-| **Other (e.g. 32-bit ARM)** | `std::chrono::steady_clock` | OS monotonic clock | Portable fallback. |
+| **Other (e.g. 32-bit x86/ARM)** | `std::chrono::steady_clock` | OS monotonic clock | Portable fallback. |
 
 See [references](#references) below for the official Intel, AMD, Arm, and MSVC architecture documentation.
 
 # installation
-Copy [`include/stopwatch.h`](include/stopwatch.h) into your project, or consume it via CMake (`add_subdirectory` or `FetchContent`):
+Copy [`include/stopwatch.h`](include/stopwatch.h) into your project, or consume it via CMake (`add_subdirectory`, `FetchContent`, or `cmake --install` + `find_package`):
 ```cmake
+find_package(stopwatch CONFIG REQUIRED) # if installed via cmake --install
 target_link_libraries(your_target PRIVATE stopwatch::stopwatch)
 ```
 
@@ -47,6 +48,24 @@ int main() {
   std::cout << "10 seconds have elapsed" << std::endl;
 }
 ```
+> **Note:** `timer` defaults to `std::chrono::steady_clock`. Constructing a `timer` from a `std::chrono::duration` is intentionally disabled at compile time for raw hardware tick clocks (`rdtscp_clock`, `cntvct_clock`) so wall-clock durations like `10s` cannot silently become raw ticks; pass an explicit `time_point` if you need tick-based deadlines.
+
+## elapsed & lap timing (`stopwatch::watch`)
+```c++
+#include "stopwatch.h"
+#include <iostream>
+
+int main() {
+  stopwatch::watch w;
+  // ... step 1 ...
+  const auto step1 = w.lap();
+  // ... step 2 ...
+  const auto step2 = w.elapsed();
+  w.reset();
+  std::cout << "step 1: " << step1.count() << " ticks, step 2: "
+            << step2.count() << " ticks\n";
+}
+```
 
 ## timing one function call
 ```c++
@@ -65,17 +84,16 @@ int main() {
 }
 ```
 
-On ARM64, you can convert ticks from `stopwatch::cntvct_clock` to nanoseconds using the hardware counter frequency (`CNTFRQ_EL0`):
+To convert raw ticks from `stopwatch::default_clock` to nanoseconds portably across x86-64, ARM64, and fallback clocks, use `stopwatch::calibrate_frequency()` and `stopwatch::to_nanoseconds()` (instant via `CNTFRQ_EL0` on ARM64 and `Clock::period` for wall clocks, or a short spin calibration against `std::chrono::steady_clock` on x86-64):
 ```c++
-#if defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
-  const auto ns = stopwatch::cntvct_clock::to_nanoseconds(ticks);
-  std::cout << ns.count() << " ns (" << stopwatch::cntvct_clock::frequency()
-            << " Hz counter)" << std::endl;
-#endif
+  const double hz = stopwatch::calibrate_frequency();
+  const auto ns = stopwatch::to_nanoseconds(ticks, hz);
+  std::cout << ns.count() << " ns (" << hz << " Hz)" << std::endl;
 ```
+On ARM64, you can also call `stopwatch::cntvct_clock::frequency()` and `stopwatch::cntvct_clock::to_nanoseconds(ticks)` directly.
 
 ## sampling multiple calls to a function
-Taking the median number of ticks for inserting 10000 items into the beginning of a container.
+Taking summary statistics (after 10 warmup iterations) for inserting 10000 items into the beginning of a container.
 ```c++
 #include "stopwatch.h"
 #include <deque>
@@ -83,22 +101,27 @@ Taking the median number of ticks for inserting 10000 items into the beginning o
 #include <vector>
 
 int main() {
-  const auto deque_samples = stopwatch::sample<100>([] {
+  const auto deque_samples = stopwatch::sample<100, 10>([] {
     std::deque<int> deque;
     for (std::size_t i = 0; i < 10000; ++i) {
       deque.insert(deque.begin(), i);
     }
   });
 
-  const auto vector_samples = stopwatch::sample<100>([] {
+  const auto vector_samples = stopwatch::sample<100, 10>([] {
     std::vector<int> vector;
     for (std::size_t i = 0; i < 10000; ++i) {
       vector.insert(vector.begin(), i);
     }
   });
 
-  std::cout << "median for deque: " << deque_samples[49].count() << std::endl;
-  std::cout << "median for vector: " << vector_samples[49].count() << std::endl;
+  const auto deque_stats = stopwatch::summarize(deque_samples);
+  const auto vector_stats = stopwatch::summarize(vector_samples);
+
+  std::cout << "median for deque: " << deque_stats.median.count()
+            << " (p95: " << deque_stats.p95.count() << ")" << std::endl;
+  std::cout << "median for vector: " << vector_stats.median.count()
+            << " (p95: " << vector_stats.p95.count() << ")" << std::endl;
 }
 ```
 
@@ -141,7 +164,7 @@ int main() {
 ```
 
 # contributing
-Contributions of any variety are greatly appreciated. All code is passed through `clang-format` using the Google style.
+Contributions of any variety are greatly appreciated. All code is formatted with `clang-format` using the repository's [`.clang-format`](.clang-format) (Google style).
 
 # references
 
